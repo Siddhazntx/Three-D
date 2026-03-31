@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 3D Reconstruction Explorer</title>
+    
+    <script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/3.4.0/model-viewer.min.js"></script>
+    
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <style>
+        body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #0d0d0d; color: #ffffff; display: flex; height: 100vh; overflow: hidden; }
+        
+        /* Sidebar Styling */
+        .sidebar { width: 320px; background-color: #1a1a1a; padding: 25px; box-shadow: 2px 0 15px rgba(0,0,0,0.8); display: flex; flex-direction: column; z-index: 10; overflow-y: auto;}
+        h1 { color: #4CAF50; font-size: 22px; border-bottom: 2px solid #333; padding-bottom: 10px; margin-top: 0;}
+        .card { background: #262626; padding: 15px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #333;}
+        
+        /* Tab Buttons */
+        .tab-buttons { display: flex; flex-direction: column; gap: 8px; margin-top: 15px; }
+        .tab-btn { background-color: #333; color: #ccc; border: none; border-left: 4px solid #333; padding: 12px 15px; border-radius: 4px; cursor: pointer; font-size: 14px; font-weight: bold; transition: all 0.2s; text-align: left; }
+        .tab-btn:hover { background-color: #444; color: #fff; border-left-color: #4CAF50; }
+        .tab-btn.active { background-color: #2c4a2e; border-left-color: #4CAF50; color: #fff; }
+
+        /* Main Viewer Area */
+        .viewer-container { flex-grow: 1; position: relative; background-color: #050505; display: flex; justify-content: center; align-items: center; }
+        .tab-content { display: none; width: 100%; height: 100%; position: relative;}
+        .tab-content.active { display: flex; justify-content: center; align-items: center; }
+        
+        /* Specific Viewer Styles */
+        model-viewer { width: 100%; height: 100%; outline: none; }
+        .depth-image { max-width: 90%; max-height: 90%; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.8); object-fit: contain;}
+        .three-canvas-container { width: 100%; height: 100%; outline: none;}
+        
+        /* Loading Text */
+        .loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #4CAF50; font-size: 18px; font-weight: bold; display: none; pointer-events: none; background: rgba(0,0,0,0.7); padding: 10px 20px; border-radius: 8px;}
+    </style>
+</head>
+<body>
+
+    <div class="sidebar">
+        <h1>Mini Project Review</h1>
+        <p style="color: #aaa; margin-top: -5px; font-size: 14px;">Depth-Anything-3 Pipeline</p>
+        <p><strong>Presenter:</strong> Siddhant Mahapatra</p>
+        
+        <div class="card">
+            <h3 style="margin-top:0; font-size: 16px;">Output Explorer</h3>
+            <p style="font-size: 13px; color: #888;">Select a representation to explore the AI generation stages:</p>
+            
+            <div class="tab-buttons">
+                <button class="tab-btn active" onclick="switchTab('tab-glb', this)">1. Final Scene (.glb)</button>
+                <button class="tab-btn" onclick="switchTab('tab-depth', this)">2. AI Depth Map (.jpg)</button>
+                <button class="tab-btn" onclick="switchTab('tab-ply-raw', this, 'results/Sample_img/reconstruction.ply', 'points')">3. Raw Point Cloud</button>
+                <button class="tab-btn" onclick="switchTab('tab-ply-rgb', this, 'results/Sample_img/voxel_mesh_rgb.ply', 'mesh')">4. RGB Voxel Mesh</button>
+                <button class="tab-btn" onclick="switchTab('tab-ply-seg', this, 'results/Sample_img/voxel_mesh_seg.ply', 'mesh')">5. Segmented Mesh</button>
+            </div>
+        </div>
+        
+        <p style="color: #666; font-size: 12px; margin-top: auto;">
+            <strong>Controls:</strong><br>
+            Left-Click: Rotate<br>
+            Right-Click: Pan<br>
+            Scroll: Zoom
+        </p>
+    </div>
+
+    <div class="viewer-container">
+        
+        <div id="tab-glb" class="tab-content active">
+            <model-viewer src="results/Sample_img/scene.glb" camera-controls auto-rotate shadow-intensity="1" exposure="1.0"></model-viewer>
+        </div>
+
+        <div id="tab-depth" class="tab-content">
+            <img src="results/Sample_img/depth_vis/0000.jpg" alt="AI Depth Map" class="depth-image">
+        </div>
+
+        <div id="tab-ply-raw" class="tab-content">
+            <div class="loading" id="loading-tab-ply-raw">Loading Millions of Points...</div>
+            <div id="container-tab-ply-raw" class="three-canvas-container"></div>
+        </div>
+
+        <div id="tab-ply-rgb" class="tab-content">
+            <div class="loading" id="loading-tab-ply-rgb">Constructing Voxel Mesh...</div>
+            <div id="container-tab-ply-rgb" class="three-canvas-container"></div>
+        </div>
+
+        <div id="tab-ply-seg" class="tab-content">
+            <div class="loading" id="loading-tab-ply-seg">Loading Segments...</div>
+            <div id="container-tab-ply-seg" class="three-canvas-container"></div>
+        </div>
+
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
+
+        // Dictionary to prevent reloading the same heavy file twice
+        const loadedScenes = {};
+
+        // Make switchTab available to the HTML buttons
+        window.switchTab = function(tabId, buttonElement, plyFileUrl = null, renderType = null) {
+            
+            // Hide all tabs & deactivate buttons
+            document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+            
+            // Show selected tab & activate button
+            document.getElementById(tabId).classList.add('active');
+            buttonElement.classList.add('active');
+
+            // If it's a 3D PLY file and hasn't been rendered yet, trigger Three.js
+            if (plyFileUrl && !loadedScenes[tabId]) {
+                loadedScenes[tabId] = true;
+                initThreeJsViewer(`container-${tabId}`, `loading-${tabId}`, plyFileUrl, renderType);
+            }
+        };
+
+        // THREE.JS Engine Setup
+        function initThreeJsViewer(containerId, loadingId, fileUrl, type) {
+            const container = document.getElementById(containerId);
+            const loadingText = document.getElementById(loadingId);
+            loadingText.style.display = 'block';
+
+            // 1. Scene & Camera
+            const scene = new THREE.Scene();
+            const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.01, 100);
+            camera.position.set(0, 0, 2);
+
+            // 2. Renderer
+            const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(container.clientWidth, container.clientHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            container.appendChild(renderer.domElement);
+
+            // 3. Controls (Smooth rotation/panning)
+            const controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+
+            // 4. Lighting (Crucial for seeing the meshes)
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(1, 1, 1).normalize();
+            scene.add(directionalLight);
+
+            // 5. PLY Loader
+            const loader = new PLYLoader();
+            loader.load(fileUrl, function (geometry) {
+                loadingText.style.display = 'none';
+
+                // Automatically center the 3D model
+                geometry.computeBoundingBox();
+                const center = new THREE.Vector3();
+                geometry.boundingBox.getCenter(center);
+                geometry.translate(-center.x, -center.y, -center.z);
+
+                let material, object;
+
+                if (type === 'points') {
+                    // Render exactly as colored points
+                    material = new THREE.PointsMaterial({ size: 0.008, vertexColors: true });
+                    object = new THREE.Points(geometry, material);
+                } else {
+                    // Render as solid cubes/triangles with lighting
+                    geometry.computeVertexNormals();
+                    material = new THREE.MeshStandardMaterial({ 
+                        vertexColors: true, 
+                        side: THREE.DoubleSide,
+                        roughness: 0.8
+                    });
+                    object = new THREE.Mesh(geometry, material);
+                }
+
+                // Automatically scale the model to fit perfectly on the screen
+                const maxDim = Math.max(
+                    geometry.boundingBox.max.x - geometry.boundingBox.min.x,
+                    geometry.boundingBox.max.y - geometry.boundingBox.min.y,
+                    geometry.boundingBox.max.z - geometry.boundingBox.min.z
+                );
+                const scale = 1.2 / maxDim;
+                object.scale.set(scale, scale, scale);
+
+                scene.add(object);
+
+            }, undefined, function (error) {
+                console.error("Error loading PLY file:", error);
+                loadingText.innerText = "Error loading file. Check console.";
+                loadingText.style.color = "red";
+            });
+
+            // Handle window resizing
+            window.addEventListener('resize', () => {
+                if (container.clientWidth > 0) {
+                    camera.aspect = container.clientWidth / container.clientHeight;
+                    camera.updateProjectionMatrix();
+                    renderer.setSize(container.clientWidth, container.clientHeight);
+                }
+            });
+
+            // Animation Loop (Keeps it running smoothly)
+            function animate() {
+                requestAnimationFrame(animate);
+                controls.update(); // Required for damping
+                renderer.render(scene, camera);
+            }
+            animate();
+        }
+    </script>
+</body>
+</html>
